@@ -7,3 +7,4 @@ The crawler crawls the DHT network with multiple concurrent instances, allowing 
 ### Compiling
 Compile and install the [DHT-addon branch](https://github.com/JFreegman/toxcore/tree/DHT-addon) of toxcore using the given instructions.
 Clone this repo to the same base directory as toxcore, then run the command `make` in the `crawler` directory.
+If when compiling you get the following error:`Package libtoxcore was not found in the pkg-config search path.` Export `PKG_CONFIG_PATH`: `export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig`.
