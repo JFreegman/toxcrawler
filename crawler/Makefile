@@ -17,3 +17,6 @@ clean:
 	rm -f *.d *.o crawler
 
 .PHONY: clean all
+
+clean-logs:
+	rm -rf ../crawler_logs
