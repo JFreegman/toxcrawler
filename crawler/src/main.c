@@ -31,7 +31,7 @@
 #include <unistd.h>
 
 #include <tox/tox.h>
-#include "../../../toxcore/toxcore/tox_private.h"
+#include <tox/tox_private.h>
 
 #include "util.h"
 
