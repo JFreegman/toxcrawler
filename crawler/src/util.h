@@ -1,7 +1,7 @@
 /*  util.h
  *
  *
- *  Copyright (C) 2016 toxcrawler All Rights Reserved.
+ *  Copyright (C) 2016-2024 toxcrawler All Rights Reserved.
  *
  *  This file is part of toxcrawler.
  *
@@ -23,6 +23,15 @@
 #ifndef UTIL_H
 #define UTIL_H
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <time.h>
+
+/* Sleeps the calling thread for `usec` nanoseconds. */
+void sleep_thread(long int usec);
+
+/* Returns the smaller value between x and y. */
+int32_t min(int32_t x, int32_t y);
 
 /* Returns the current unix time. */
 time_t get_time(void);

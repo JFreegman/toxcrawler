@@ -1,7 +1,7 @@
 /*  util.c
  *
  *
- *  Copyright (C) 2016 toxcrawler All Rights Reserved.
+ *  Copyright (C) 2016-2024 toxcrawler All Rights Reserved.
  *
  *  This file is part of toxcrawler.
  *
@@ -18,42 +18,55 @@
  *  You should have received a copy of the GNU General Public License
  *  along with toxcrawler.  If not, see <http://www.gnu.org/licenses/>.
  *
-*/
+ */
 
-#include <stdio.h>
+#include "util.h"
+
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <sys/stat.h>
+#include <time.h>
 
-/* Returns the current unix time. */
+void sleep_thread(long int usec)
+{
+    struct timespec req;
+    struct timespec rem;
+
+    req.tv_sec = 0;
+    req.tv_nsec = usec * 1000L;
+
+    if (nanosleep(&req, &rem) == -1) {
+        if (nanosleep(&rem, NULL) == -1) {
+            fprintf(stderr, "nanosleep() returned -1\n");
+        }
+    }
+}
+
+int32_t min(int32_t x, int32_t y)
+{
+    return x < y ? x : y;
+}
+
 time_t get_time(void)
 {
     return time(NULL);
 }
 
-/* Returns true if timestamp has timed out according to timeout value. */
 bool timed_out(time_t timestamp, time_t timeout)
 {
     return timestamp + timeout <= get_time();
 }
 
-/* Puts the current time in buf in the format of [HH:mm:ss] */
 void get_time_format(char *buf, int bufsize)
 {
     struct tm *timeinfo;
-    time_t t = get_time();
+    const time_t t = get_time();
     timeinfo = localtime((const time_t*) &t);
     strftime(buf, bufsize, "%H:%M:%S", timeinfo);
 }
 
-/*
- * Converts a hexidecimal string of length hex_len to binary format and puts the result in output.
- * output_size must be exactly half of hex_len.
- *
- * Returns 0 on success.
- * Returns -1 on failure.
- */
 int hex_string_to_bin(const char *hex_string, size_t hex_len, char *output, size_t output_size)
 {
     if (output_size == 0 || hex_len != output_size * 2) {
@@ -61,26 +74,17 @@ int hex_string_to_bin(const char *hex_string, size_t hex_len, char *output, size
     }
 
     for (size_t i = 0; i < output_size; ++i) {
-        sscanf(hex_string, "%2hhx", &output[i]);
+        sscanf(hex_string, "%2hhx", (unsigned char *) &output[i]);
         hex_string += 2;
     }
 
     return 0;
 }
 
-/* Puts logfile path into buf in the form: BASE_LOG_PATH/YYYY-mm-dd/unix-timestamp.cwl
- *
- * -The crawler's present working directory is treated as root.
- * -The date is the current day, and the unixtime is the current unixtime.
- * -If the current day's directory does not exist it is automatically created.
- *
- * Returns 0 on success.
- * Returns -1 on failure.
- */
 #define BASE_LOG_PATH "../crawler_logs"
 int get_log_path(char *buf, size_t buf_len)
 {
-    time_t tm = get_time();
+    const time_t tm = get_time();
 
     char tmstr[32];
     strftime(tmstr, sizeof(tmstr), "%Y-%m-%d", localtime(&tm));
