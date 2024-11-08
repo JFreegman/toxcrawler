@@ -23,6 +23,7 @@
 #include "util.h"
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -89,24 +90,34 @@ int get_log_path(char *buf, size_t buf_len)
     char tmstr[32];
     strftime(tmstr, sizeof(tmstr), "%Y-%m-%d", localtime(&tm));
 
-    char path[strlen(BASE_LOG_PATH) + strlen(tmstr) + 3];
-    snprintf(path, sizeof(path), "%s/%s/", BASE_LOG_PATH, tmstr);
+    const uint32_t path_len = strlen(BASE_LOG_PATH) + strlen(tmstr) + 3;
+    char *path = malloc(path_len);
+
+    if (path == NULL) {
+        return -1;
+    }
+
+    snprintf(path, path_len, "%s/%s/", BASE_LOG_PATH, tmstr);
 
     struct stat st;
 
     if (stat(BASE_LOG_PATH, &st) == -1) {
         if (mkdir(BASE_LOG_PATH, 0700) == -1) {
+            free(path);
             return -1;
         }
     }
 
     if (stat(path, &st) == -1) {
         if (mkdir(path, 0700) == -1) {
+            free(path);
             return -1;
         }
     }
 
     snprintf(buf, buf_len, "%s/%llu.cwl", path, (long long unsigned) tm);
+
+    free(path);
 
     return 0;
 }

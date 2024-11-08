@@ -38,33 +38,31 @@
 #include <tox/tox_private.h>
 
 /* Seconds to wait between new crawler instances */
-#define NEW_CRAWLER_INTERVAL 180u
+#define NEW_CRAWLER_INTERVAL (60u * 2)
 
 /* Maximum number of concurrent crawler instances */
-#define MAX_CRAWLERS 4u
+#define MAX_CRAWLERS 5u
 
-/* The number of passes we make through the nodes list before giving up */
-#define MAX_NUM_PASSES 2u
+/* Seconds since last seen new node before we time a crawler out */
+#define CRAWLER_TIMEOUT 20u
 
-/* Seconds to wait for new nodes before a crawler times out and exits once pass limit is reached */
-#define CRAWLER_TIMEOUT 10u
+/* The maximum time a crawler can run before timing out */
+#define CRAWLER_MAX_RUNTIME (60 * 20)
 
 /* Default maximum number of nodes the nodes list can store */
 #define DEFAULT_NODES_LIST_SIZE 4096u
 
-/* Seconds to wait between getnodes requests */
-#define GETNODES_REQUEST_INTERVAL 0u
-
-/* Max number of nodes to send getnodes requests to per GETNODES_REQUEST_INTERVAL */
-#define MAX_GETNODES_REQUESTS 12u
+/* Max number of nodes to send getnodes requests to per iteration */
+#define MAX_GETNODES_REQUESTS 6u
 
 /* Number of random node requests to make for each node we send a request to */
-#define NUM_RAND_GETNODE_REQUESTS 15
+#define NUM_RAND_GETNODE_REQUESTS 8u
 
 typedef struct DHT_Node {
     uint8_t  public_key[TOX_DHT_NODE_PUBLIC_KEY_SIZE];
     char     ip[TOX_DHT_NODE_IP_STRING_SIZE];
     uint16_t port;
+    bool     seen;  // true if we have sent a getnodes request to this node
 } DHT_Node;
 
 typedef struct Crawler {
@@ -73,9 +71,8 @@ typedef struct Crawler {
     uint32_t     num_nodes;
     uint32_t     nodes_list_size;
     uint32_t     send_ptr;    /* index of the oldest node that we haven't sent a getnodes request to */
-    time_t       last_new_node;   /* Last time we found an unknown node */
-    time_t       last_getnodes_request;
-    size_t       passes;  /* How many times we've iterated the full nodes list */
+    time_t       last_seen_new_node;
+    time_t       start_time;
     pthread_t      tid;
     pthread_attr_t attr;
 } Crawler;
@@ -98,17 +95,16 @@ static const struct toxNodes {
 } bs_nodes[] = {
     { "144.217.86.39",      33445, "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C" },
     { "tox.abilinski.com",  33445, "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E" },
-    { "tox4.plastiras.org", 33445, "BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF58659C04F" },
     { "81.169.136.229",     33445, "836D1DA2BE12FE0E669334E437BE3FB02806F1528C2B2782113E0910C7711409" },
-    { "46.101.197.175",     33445, "CD133B521159541FB1D326DE9850F5E56A6C724B5B8E5EB5CD8D950408E95707" },
     { "172.104.215.182",    33445, "DA2BD927E01CD05EBCC2574EBE5BEBB10FF59AE0B2105A7D1E2B40E49BB20239" },
     { "188.225.9.167",      33445, "1911341A83E02503AB1FD6561BD64AF3A9D6C3F12B5FBB656976B2E678644A67" },
-    { "122.116.39.151",     33445, "5716530A10D362867C8E87EE1CD5362A233BAFBBA4CF47FA73B7CAD368BD5E6E" },
     { "tox.initramfs.io",   33445, "3F0A45A268367C1BEA652F258C85F4A66DA76BCAA667A49E770BCC4917AB6A25" },
     { "139.162.110.188",    33445, "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
-    { "198.98.49.206",      33445, "28DB44A3CEEE69146469855DFFE5F54DA567F5D65E03EFB1D38BBAEFF2553255" },
     { "172.105.109.31",     33445, "D46E97CF995DC1820B92B7D899E152A217D36ABE22730FEA4B6BF1BFC06C617C" },
     { "91.146.66.26",       33445, "B5E7DAC610DBDE55F359C7F8690B294C8E4FCEC4385DE9525DBFA5523EAD9D53" },
+    { "5.19.249.240",       33445, "DA98A4C0CD7473A133E115FEA2EBDAEEA2EF4F79FD69325FC070DA4DE4BA3238" },
+    { "188.225.9.167",      33445, "1911341A83E02503AB1FD6561BD64AF3A9D6C3F12B5FBB656976B2E678644A67" },
+    { "104.225.141.59",     43334, "933BA20B2E258B4C0D475B6DECE90C7E827FE83EFA9655414E7841251B19A72C" },
     { NULL, 0, NULL },
 };
 
@@ -191,72 +187,46 @@ void cb_getnodes_response(Tox *tox, const uint8_t *public_key, const char *ip, u
     snprintf(new_node->ip, sizeof(new_node->ip), "%s", ip);
     new_node->port = port;
 
+    cwl->last_seen_new_node = get_time();
+
     cwl->nodes_list[cwl->num_nodes] = new_node;
     ++cwl->num_nodes;
-
-    cwl->last_new_node = get_time();
 }
 
 /*
- * Sends a getnodes request to up to MAX_GETNODES_REQUESTS nodes in the nodes list that have not been queried.
+ * Sends getnodes requests to nodes in the nodes list.
+ *
  * Returns the number of requests sent.
  */
 static uint32_t send_node_requests(Crawler *cwl)
 {
-    if (!timed_out(cwl->last_getnodes_request, GETNODES_REQUEST_INTERVAL)) {
-        return 0;
-    }
-
     uint32_t count = 0;
     uint32_t i;
 
     for (i = cwl->send_ptr; count < MAX_GETNODES_REQUESTS && i < cwl->num_nodes; ++i) {
-        const DHT_Node *node = cwl->nodes_list[i];
+        DHT_Node *node = cwl->nodes_list[i];
 
-        Tox_Err_Dht_Get_Nodes err;
-        tox_dht_get_nodes(cwl->tox, node->public_key, node->ip, node->port, node->public_key, &err);
-
-        // packets often fail to send due to spam so we don't report the error
-        if (err != TOX_ERR_DHT_GET_NODES_OK && err != TOX_ERR_DHT_GET_NODES_FAIL) {
-            fprintf(stderr, "getnodes call 1 failed: %d\n", err);
-        }
-
-        const int32_t num_rand_requests = min(NUM_RAND_GETNODE_REQUESTS / 2, (int32_t) cwl->num_nodes);
-
-        for (int32_t j = 0; j < num_rand_requests; ++j) {
+        for (int32_t j = 0; j < NUM_RAND_GETNODE_REQUESTS; ++j) {
             const uint32_t r = ((uint32_t) rand()) % cwl->num_nodes;
             const DHT_Node *rand_node = cwl->nodes_list[r];
 
-            tox_dht_get_nodes(cwl->tox, node->public_key, node->ip, node->port, rand_node->public_key, &err);
-
-            if (err != TOX_ERR_DHT_GET_NODES_OK && err != TOX_ERR_DHT_GET_NODES_FAIL) {
-                fprintf(stderr, "getnodes call 2 failed: %d\n", err);
-            }
-
-            tox_dht_get_nodes(cwl->tox, rand_node->public_key, rand_node->ip, rand_node->port, node->public_key, &err);
-
-            if (err != TOX_ERR_DHT_GET_NODES_OK && err != TOX_ERR_DHT_GET_NODES_FAIL) {
-                fprintf(stderr, "getnodes call 3 failed: %d\n", err);
-            }
+            tox_dht_get_nodes(cwl->tox, node->public_key, node->ip, node->port, rand_node->public_key, NULL);
+            tox_dht_get_nodes(cwl->tox, rand_node->public_key, rand_node->ip, rand_node->port,
+                              node->public_key, NULL);
         }
 
+        node->seen = true;
         ++count;
     }
 
-    cwl->send_ptr = i;
-    cwl->last_getnodes_request = get_time();
-
-    if (cwl->send_ptr == cwl->num_nodes) {
-        ++cwl->passes;
-        cwl->send_ptr = 0;
-    }
+    cwl->send_ptr = i == cwl->num_nodes ? 0 : i;
 
     return count;
 }
 
 /*
- * Returns a pointer to an inactive crawler in the threads array.
- * Returns NULL if there are no crawlers available.
+ * Returns a pointer to a new crawler instance.
+ * Returns NULL on failure.
  */
 Crawler *crawler_new(void)
 {
@@ -292,8 +262,8 @@ Crawler *crawler_new(void)
 
     tox_callback_dht_get_nodes_response(tox, cb_getnodes_response);
 
-    cwl->last_getnodes_request = get_time();
-    cwl->last_new_node = get_time();
+    cwl->start_time = get_time();
+    cwl->last_seen_new_node = get_time();
 
     bootstrap_tox(cwl);
 
@@ -311,13 +281,20 @@ static int crawler_dump_log(Crawler *cwl)
         return -1;
     }
 
-    char log_path_temp[strlen(log_path) + strlen(TEMP_FILE_EXT) + 1];
-    snprintf(log_path_temp, sizeof(log_path_temp), "%s%s", log_path, TEMP_FILE_EXT);
+    const uint32_t temp_len = strlen(log_path) + strlen(TEMP_FILE_EXT) + 1;
+    char *log_path_temp = malloc(temp_len);
+
+    if (log_path_temp == NULL) {
+        return -2;
+    }
+
+    snprintf(log_path_temp, temp_len, "%s%s", log_path, TEMP_FILE_EXT);
 
     FILE *fp = fopen(log_path_temp, "w");
 
     if (fp == NULL) {
-        return -2;
+        free(log_path_temp);
+        return -3;
     }
 
     for (uint32_t i = 0; i < cwl->num_nodes; ++i) {
@@ -327,8 +304,11 @@ static int crawler_dump_log(Crawler *cwl)
     fclose(fp);
 
     if (rename(log_path_temp, log_path) != 0) {
-        return -3;
+        free(log_path_temp);
+        return -4;
     }
+
+    free(log_path_temp);
 
     return 0;
 }
@@ -346,11 +326,31 @@ static void crawler_kill(Crawler *cwl)
     free(cwl);
 }
 
+/*
+ * Returns true if all nodes in the crawler's nodes list have been seen.
+ */
+static bool crawler_all_nodes_seen(const Crawler *cwl)
+{
+    uint32_t count = 0;
+
+    for (uint32_t i = 0; i < cwl->num_nodes; ++i) {
+        const DHT_Node *node = cwl->nodes_list[i];
+
+        if (node->seen) {
+            ++count;
+        }
+    }
+
+    return count == cwl->num_nodes;
+}
+
 /* Returns true if the crawler is unable to find new nodes in the DHT or the exit flag has been triggered */
 static bool crawler_finished(Crawler *cwl)
 {
     LOCK;
-    if (FLAG_EXIT || (cwl->passes >= MAX_NUM_PASSES && timed_out(cwl->last_new_node, CRAWLER_TIMEOUT))) {
+    if (FLAG_EXIT
+        || (timed_out(cwl->last_seen_new_node, CRAWLER_TIMEOUT) && crawler_all_nodes_seen(cwl))
+        || timed_out(cwl->start_time, CRAWLER_MAX_RUNTIME)) {
         UNLOCK;
         return true;
     }
@@ -451,10 +451,9 @@ static int do_thread_control(void)
         return -2;
     }
 
-    threads.last_created = get_time();
-
     LOCK;
     ++threads.num_active;
+    threads.last_created = get_time();
     UNLOCK;
 
     return 0;
