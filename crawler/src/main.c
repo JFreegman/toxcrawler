@@ -150,7 +150,8 @@ static bool node_crawled(Crawler *cwl, const uint8_t *public_key)
     return false;
 }
 
-void cb_getnodes_response(Tox *tox, const uint8_t *public_key, const char *ip, uint16_t port, void *user_data)
+void cb_getnodes_response(Tox *tox, const uint8_t *public_key, const char *ip, uint32_t ip_length,
+    uint16_t port, void *user_data)
 {
     Crawler *cwl = (Crawler *)user_data;
 
@@ -158,7 +159,7 @@ void cb_getnodes_response(Tox *tox, const uint8_t *public_key, const char *ip, u
         return;
     }
 
-    if (public_key == NULL || ip == NULL) {
+    if (public_key == NULL || ip == NULL || ip_length == 0) {
         return;
     }
 
@@ -210,9 +211,9 @@ static uint32_t send_node_requests(Crawler *cwl)
             const uint32_t r = ((uint32_t) rand()) % cwl->num_nodes;
             const DHT_Node *rand_node = cwl->nodes_list[r];
 
-            tox_dht_get_nodes(cwl->tox, node->public_key, node->ip, node->port, rand_node->public_key, NULL);
-            tox_dht_get_nodes(cwl->tox, rand_node->public_key, rand_node->ip, rand_node->port,
-                              node->public_key, NULL);
+            tox_dht_send_nodes_request(cwl->tox, node->public_key, node->ip, node->port, rand_node->public_key, NULL);
+            tox_dht_send_nodes_request(cwl->tox, rand_node->public_key, rand_node->ip, rand_node->port,
+                                       node->public_key, NULL);
         }
 
         node->seen = true;
@@ -260,7 +261,7 @@ Crawler *crawler_new(void)
     cwl->nodes_list = nodes_list;
     cwl->nodes_list_size = DEFAULT_NODES_LIST_SIZE;
 
-    tox_callback_dht_get_nodes_response(tox, cb_getnodes_response);
+    tox_callback_dht_nodes_response(tox, cb_getnodes_response);
 
     cwl->start_time = get_time();
     cwl->last_seen_new_node = get_time();
@@ -369,8 +370,15 @@ void *do_crawler_thread(void *data)
         sleep_thread(tox_iteration_interval(cwl->tox) * 1000);
     }
 
+    // uncomment to show ratio of nodes that are compatible with NGC
+    /* const uint16_t num_close = tox_dht_get_num_closelist(cwl->tox); */
+    /* const uint16_t num_new = tox_dht_get_num_closelist_announce_capable(cwl->tox); */
+    /* const float r = num_new > 0 ? (float)num_new / (float)num_close : 0; */
+
     char time_format[128];
     get_time_format(time_format, sizeof(time_format));
+
+    /* printf("[%s] Nodes: %llu (Support NGC ratio: %.2f)\n", time_format, (unsigned long long) cwl->num_nodes, r); */
     printf("[%s] Nodes: %llu\n", time_format, (unsigned long long) cwl->num_nodes);
 
     LOCK;
