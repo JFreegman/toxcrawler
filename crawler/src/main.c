@@ -244,11 +244,21 @@ Crawler *crawler_new(void)
         return NULL;
     }
 
-    struct Tox_Options options;
-    tox_options_default(&options);
+    Tox_Err_Options_New options_new_err;
+    struct Tox_Options *options = tox_options_new(&options_new_err);
+
+    if (options == NULL) {
+        fprintf(stderr, "tox_options_new() failed with error: %d\n", options_new_err);
+        free(cwl);
+        return NULL;
+    }
+
+    tox_options_default(options);
 
     Tox_Err_New err;
-    Tox *tox = tox_new(&options, &err);
+    Tox *tox = tox_new(options, &err);
+
+    tox_options_free(options);
 
     if (err != TOX_ERR_NEW_OK || tox == NULL) {
         fprintf(stderr, "tox_new() failed: %d\n", err);
