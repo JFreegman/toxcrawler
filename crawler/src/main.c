@@ -250,6 +250,7 @@ Crawler *crawler_new(void)
     if (options == NULL) {
         fprintf(stderr, "tox_options_new() failed with error: %d\n", options_new_err);
         free(cwl);
+        free(nodes_list);
         return NULL;
     }
 
